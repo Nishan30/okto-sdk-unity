@@ -9,9 +9,9 @@ using System.Threading.Tasks;
 using Newtonsoft.Json;
 using System.Linq;
 using System.Reflection;
-#if ENABLE_GOOGLE_PLAY_GAMES
-    using GooglePlayGames.BasicApi;
-    using GooglePlayGames;
+
+#if GOOGLE_LOGIN
+using Google;
 #endif
 
 
@@ -28,12 +28,18 @@ namespace OktoProvider
         private int JOB_RETRY_INTERVAL = 2;
         private Credentials credentials;
         public static event Action OnSDKInitialized;
+#if GOOGLE_LOGIN
+        private GoogleSignInConfiguration configuration;
+#endif
+
 
         public string AuthToken { get; set; }
         public string RefreshToken { get; set; }
         public string DeviceToken { get; set; }
         public string apiKey { get; set; }
         public string buildStage { get; set; }
+
+        [SerializeField] private String webClientId;
 
         private void Awake()
         {
@@ -45,7 +51,7 @@ namespace OktoProvider
             }
             else
             {
-                Destroy(gameObject); 
+                Destroy(gameObject);
             }
         }
 
@@ -66,53 +72,58 @@ namespace OktoProvider
 
         void InitializePlayGamesLogin()
         {
-#if ENABLE_GOOGLE_PLAY_GAMES
-                var config = new PlayGamesClientConfiguration.Builder()
-                    .RequestIdToken()
-                    .RequestEmail()
-                    .Build();
+#if GOOGLE_LOGIN
 
-                PlayGamesPlatform.InitializeInstance(config);
-                PlayGamesPlatform.DebugLogEnabled = true;
-                PlayGamesPlatform.Activate();
+            configuration = new GoogleSignInConfiguration
+            {
+                WebClientId = webClientId,
+                RequestEmail = true,
+                RequestIdToken = true,
+            };
+
 #else
-            Debug.LogWarning("Google Sign-In is not enabled. Please add ENABLE_GOOGLE_PLAY_GAMES to scripting define symbols.");
+            Debug.LogWarning("Google Sign-In is not enabled. Please add IOS_GOOGLE_LOGIN to scripting define symbols.");
 
 #endif
         }
         public async Task<(AuthDetails result, Exception error)> LoginGoogle()
         {
-#if ENABLE_GOOGLE_PLAY_GAMES
-                var tcs = new TaskCompletionSource<(string idToken, Exception error)>();
+#if GOOGLE_LOGIN
+               GoogleSignIn.Configuration = configuration;
 
-                // Authenticate with Play Games
-                Social.localUser.Authenticate(success =>
+            try
                 {
-                    if (success)
+                GoogleSignInUser user = await GoogleSignIn.DefaultInstance.SignIn();
+                if (user != null)
                     {
-                        string idToken = ((PlayGamesLocalUser)Social.localUser).GetIdToken();
-                        Debug.Log($"Google Login successful. IdToken: {idToken}");
-                        tcs.SetResult((idToken, null));
-                    }
-                    else
-                    {
-                        Debug.LogWarning("Google Login failed.");
-                        tcs.SetResult((null, new Exception("Google authentication failed.")));
-                    }
-                });
+                        Debug.Log($"Signed in successfully! Welcome: {user.DisplayName}");
+                        Debug.Log($"ID Token: {user.IdToken}");
 
-                // Wait for Play Games authentication result
-                var (idToken, authError) = await tcs.Task;
-
-                if (authError != null || string.IsNullOrEmpty(idToken))
+                        // Use the ID token to authenticate with your backend
+                        return await AuthenticateAsync(user.IdToken); // Returns (AuthDetails, Exception)
+                    }
+                }
+                catch (AggregateException ex)
                 {
-                    return (null, authError ?? new Exception("IdToken is null or empty."));
+                    foreach (var innerException in ex.InnerExceptions)
+                    {
+                        if (innerException is GoogleSignIn.SignInException signInError)
+                        {
+                            Debug.LogError($"Google Sign-In Error: {signInError.Status} - {signInError.Message}");
+                            return (null, signInError);
+                        }
+                    }
+                }
+                catch (Exception ex)
+                {
+                    Debug.LogError($"Unexpected Error: {ex.Message}");
+                    return (null, ex);
                 }
 
-                // Pass IdToken to backend authentication
-                return await AuthenticateAsync(idToken);
+                Debug.Log("Sign-In was canceled.");
+                return (null, null); // Return null if sign-in is canceled
 #else
-            Debug.LogError("Google Sign-In is not enabled. Please add ENABLE_GOOGLE_PLAY_GAMES to scripting define symbols.");
+            Debug.LogWarning("Google Sign-In is not enabled. Please add IOS_GOOGLE_LOGIN to scripting define symbols.");
             return (null, null);
 #endif
         }
@@ -143,6 +154,11 @@ namespace OktoProvider
 
         public void Logout()
         {
+#if GOOGLE_LOGIN
+            GoogleSignIn.Configuration = configuration;
+            GoogleSignIn.DefaultInstance.SignOut();
+#endif
+
             var newAuthDetails = new AuthDetails
             {
                 authToken = "",
@@ -222,7 +238,7 @@ namespace OktoProvider
                 Debug.Log("login2here");
                 Debug.Log("login" + jsonContent);
                 var response = await httpClient.PostAsync($"{baseUrl}/api/v2/authenticate", jsonContent);
-                Debug.Log("login" +  response);
+                Debug.Log("login" + response);
                 if (response.IsSuccessStatusCode)
                 {
                     var responseContent = await response.Content.ReadAsStringAsync();
@@ -299,7 +315,7 @@ namespace OktoProvider
                 httpClient.DefaultRequestHeaders.Clear();
                 httpClient.DefaultRequestHeaders.UserAgent.ParseAdd("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/86.0.4240.198 Safari/537.36");
                 httpClient.DefaultRequestHeaders.Add("Authorization", "Bearer " + AuthToken);
-                var response = await httpClient.GetAsync($"{baseUrl}/api"+url);
+                var response = await httpClient.GetAsync($"{baseUrl}/api" + url);
                 Debug.Log(response);
                 Debug.Log($"{baseUrl}/api" + url);
                 Debug.Log(AuthToken);
@@ -333,7 +349,7 @@ namespace OktoProvider
                 Debug.Log(AuthToken);
                 Debug.Log(jsonContent);
                 var response = await httpClient.PostAsync($"{baseUrl}/api" + endpoint, content);
-               
+
 
                 response.EnsureSuccessStatusCode();
 
@@ -500,7 +516,7 @@ namespace OktoProvider
             }
 
             return string.Join("&", queryParams);
-        } 
+        }
 
         public async Task<TransferNftData> transferNft(TransferNft data)
         {
@@ -858,9 +874,9 @@ namespace OktoProvider
         public string nft_address { get; set; }
     }
 
-    public class SOLTransaction 
+    public class SOLTransaction
     {
-        public List<Instruction> instructions { get; set; }  
+        public List<Instruction> instructions { get; set; }
         public List<string> signers { get; set; }
     }
 
@@ -873,12 +889,12 @@ namespace OktoProvider
 
     public class AccountMeta
     {
-        public string pubkey { get; set; }      
-        public bool isSigner { get; set; }     
-        public bool isWritable { get; set; }      
+        public string pubkey { get; set; }
+        public bool isSigner { get; set; }
+        public bool isWritable { get; set; }
     }
 
-    public class EVMTransaction 
+    public class EVMTransaction
     {
         public string from { get; set; }
         public string to { get; set; }
